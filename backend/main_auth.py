@@ -1,4 +1,5 @@
 
+import os
 import re
 import sqlite3
 import uuid
@@ -31,9 +32,17 @@ from auth import (
 # --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE = BASE_DIR / "aeroverify.db"
-UPLOAD_DIR = BASE_DIR / "uploads"
 
+# Defaults preserve your existing local database.
+DATABASE = Path(
+    os.getenv("DATABASE_PATH", str(BASE_DIR / "aeroverify.db"))
+).expanduser()
+
+UPLOAD_DIR = Path(
+    os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads"))
+).expanduser()
+
+DATABASE.parent.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
@@ -45,6 +54,20 @@ ALLOWED_EXTENSIONS = {
     ".png": "image/png",
 }
 
+# Comma-separated frontend URLs.
+CORS_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173"
+    ).split(",")
+    if origin.strip()
+]
+
+
+# --------------------------------------------------
+# FASTAPI APPLICATION
+# --------------------------------------------------
 
 app = FastAPI(
     title="AeroVerify API",
@@ -52,13 +75,12 @@ app = FastAPI(
     version="4.0.0",
 )
 
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -68,15 +90,25 @@ app.add_middleware(
 
 @contextmanager
 def get_db():
-    connection = sqlite3.connect(DATABASE)
+
+    connection = sqlite3.connect(
+        DATABASE,
+        timeout=30
+    )
+
     connection.row_factory = sqlite3.Row
+
+    # Enforce foreign-key relationships.
+    connection.execute("PRAGMA foreign_keys = ON")
 
     try:
         yield connection
         connection.commit()
+
     except Exception:
         connection.rollback()
         raise
+
     finally:
         connection.close()
 
@@ -141,7 +173,6 @@ def initialize_database():
                 REFERENCES users(id)
             """)
 
-        # New document metadata table.
         connection.execute("""
             CREATE TABLE IF NOT EXISTS passenger_documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,6 +225,7 @@ class AdminReview(BaseModel):
 # --------------------------------------------------
 
 def public_user(user):
+
     return {
         "id": user["id"],
         "full_name": user["full_name"],
@@ -205,7 +237,9 @@ def public_user(user):
 def get_current_user(
     user_id: int = Depends(get_current_user_id),
 ):
+
     with get_db() as connection:
+
         user = connection.execute(
             """
             SELECT id, full_name, email, role
@@ -332,6 +366,7 @@ def validate_file_signature(content: bytes, extension: str):
 
 @app.get("/")
 def home():
+
     return {
         "message": "Welcome to AeroVerify API!",
         "version": "4.0.0",
@@ -340,6 +375,7 @@ def home():
 
 @app.get("/health")
 def health_check():
+
     return {"status": "healthy"}
 
 
@@ -361,6 +397,7 @@ def register(data: RegisterRequest):
     with get_db() as connection:
 
         try:
+
             cursor = connection.execute(
                 """
                 INSERT INTO users (
@@ -436,6 +473,7 @@ def login(data: LoginRequest):
 
 @app.get("/api/auth/me")
 def me(user=Depends(get_current_user)):
+
     return user
 
 
@@ -625,7 +663,7 @@ def get_passenger(
 
 
 # --------------------------------------------------
-# UPLOAD REAL PASSENGER DOCUMENT
+# UPLOAD PASSENGER DOCUMENT
 # --------------------------------------------------
 
 @app.post("/api/passengers/{passenger_id}/documents")
@@ -635,7 +673,6 @@ async def submit_documents(
     user=Depends(require_role("passenger")),
 ):
 
-    # Verify passenger ownership.
     with get_db() as connection:
 
         passenger = find_passenger(
@@ -654,10 +691,12 @@ async def submit_documents(
                 detail="This verification has already been decided.",
             )
 
-    # Validate extension.
-    original_filename = Path(
-        file.filename or "document"
-    ).name
+    # Normalize filename separators and prevent path traversal.
+    original_filename = (
+        (file.filename or "document")
+        .replace("\\", "/")
+        .split("/")[-1]
+    )
 
     extension = Path(original_filename).suffix.lower()
 
@@ -667,7 +706,6 @@ async def submit_documents(
             detail="Only PDF, JPG, JPEG and PNG files are allowed.",
         )
 
-    # Read at most 5 MB + 1 byte.
     content = await file.read(MAX_FILE_SIZE + 1)
 
     if not content:
@@ -682,17 +720,13 @@ async def submit_documents(
             detail="File size must not exceed 5 MB.",
         )
 
-    # Validate actual file signature.
     if not validate_file_signature(content, extension):
         raise HTTPException(
             status_code=400,
             detail="File content does not match its extension.",
         )
 
-    # Generate a unique server-side filename.
-    stored_filename = (
-        f"{uuid.uuid4().hex}{extension}"
-    )
+    stored_filename = f"{uuid.uuid4().hex}{extension}"
 
     file_path = UPLOAD_DIR / stored_filename
 
@@ -763,7 +797,6 @@ async def submit_documents(
 
     except Exception:
 
-        # Avoid leaving an untracked file if database insertion fails.
         if file_path.exists():
             file_path.unlink()
 
@@ -849,6 +882,7 @@ def view_document(
         media_type=content_type,
         filename=original_filename,
         content_disposition_type="inline",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
