@@ -1,0 +1,38 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploaded documents
+uploads/
+static/uploads/
+
+# Node
+node_modules/
+dist/
+build/
+
+# System and editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Old backups and temporary files
+*_backup.py
+*_before_upload.py
+*.save
